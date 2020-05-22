@@ -31,6 +31,11 @@ SUBROUTINE hydro
   USE advection_module
   USE reset_field_module
 
+#ifdef ASCENT_ENABLED
+  use ascent, only: ascent_timer_start, ascent_timer_stop
+  use insitu, only: insitu_execute, insitu_finalize
+#endif
+
   IMPLICIT NONE
 
   INTEGER         :: loc(1)
@@ -74,6 +79,10 @@ SUBROUTINE hydro
       IF(MOD(step, visit_frequency).EQ.0) CALL visit()
     ENDIF
 
+#ifdef ASCENT_ENABLED
+    call insitu_execute()
+#endif
+
     ! Sometimes there can be a significant start up cost that appears in the first step.
     ! Sometimes it is due to the number of MPI tasks, or OpenCL kernel compilation.
     ! On the short test runs, this can skew the results, so should be taken into account
@@ -86,6 +95,11 @@ SUBROUTINE hydro
       complete=.TRUE.
       CALL field_summary()
       IF(visit_frequency.NE.0) CALL visit()
+
+#ifdef ASCENT_ENABLED
+      call insitu_execute()
+      call insitu_finalize()
+#endif
 
       wall_clock=timer() - timerstart
       IF ( parallel%boss ) THEN

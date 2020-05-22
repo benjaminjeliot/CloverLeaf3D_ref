@@ -4,7 +4,13 @@ cmake_minimum_required(VERSION 3.12)
 
 project(cloverleaf3d LANGUAGES CXX C Fortran)
 
-find_package(MPI REQUIRED COMPONENTS Fortran)
+option(ENABLE_Ascent "Enable Ascent in-situ visualisation and analysis support" OFF)
+
+find_package(MPI REQUIRED COMPONENTS Fortran CXX C)
+
+if(ENABLE_Ascent)
+  find_package(Ascent REQUIRED)
+endif()
 
 add_executable(cloverleaf3d
   data.f90
@@ -22,7 +28,7 @@ add_executable(cloverleaf3d
   update_halo.f90
   ideal_gas_kernel.f90
   ideal_gas.f90
-  start.f90
+  start.F90
   generate_chunk_kernel.f90
   generate_chunk.f90
   initialise.f90
@@ -48,11 +54,18 @@ add_executable(cloverleaf3d
   advection.f90
   reset_field_kernel.f90
   reset_field.f90
-  hydro.f90
+  hydro.F90
   visit.f90
   clover_leaf.f90
   timer_c.c
 )
 
-target_link_libraries(cloverleaf3d MPI::MPI_Fortran)
+target_link_libraries(cloverleaf3d PRIVATE MPI::MPI_Fortran)
+
+if (ENABLE_Ascent)
+  target_sources(cloverleaf3d PRIVATE insitu.f90)
+  target_link_libraries(cloverleaf3d PRIVATE ascent::ascent_mpi)
+  target_include_directories(cloverleaf3d PRIVATE "${ASCENT_INCLUDE_DIRS}")
+  target_compile_definitions(cloverleaf3d PRIVATE "ASCENT_ENABLED")
+endif()
 

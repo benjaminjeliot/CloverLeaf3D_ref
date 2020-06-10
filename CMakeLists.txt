@@ -4,12 +4,12 @@ cmake_minimum_required(VERSION 3.12)
 
 project(cloverleaf3d LANGUAGES CXX C Fortran)
 
-option(ENABLE_Ascent "Enable Ascent in-situ visualisation and analysis support" OFF)
+option(ENABLE_SENSEI "Enable SENSEI in-situ visualization and analysis support" ON)
 
 find_package(MPI REQUIRED COMPONENTS Fortran CXX C)
 
-if(ENABLE_Ascent)
-  find_package(Ascent REQUIRED)
+if(ENABLE_SENSEI)
+  find_package(SENSEI REQUIRED)
 endif()
 
 add_executable(cloverleaf3d
@@ -62,10 +62,15 @@ add_executable(cloverleaf3d
 
 target_link_libraries(cloverleaf3d PRIVATE MPI::MPI_Fortran)
 
-if (ENABLE_Ascent)
-  target_sources(cloverleaf3d PRIVATE insitu.f90)
-  target_link_libraries(cloverleaf3d PRIVATE ascent::ascent_mpi)
-  target_include_directories(cloverleaf3d PRIVATE "${ASCENT_INCLUDE_DIRS}")
-  target_compile_definitions(cloverleaf3d PRIVATE "ASCENT_ENABLED")
+set(SENSEI_INSITU_SOURCE_FILES
+  conduit_fortran_extra.F90
+  insitu.f90
+  sensei_bridge.cpp
+)
+
+if (ENABLE_SENSEI)
+  target_sources(cloverleaf3d PRIVATE ${SENSEI_INSITU_SOURCE_FILES})
+  target_compile_definitions(cloverleaf3d PRIVATE "SENSEI_ENABLED")
+  target_link_libraries(cloverleaf3d PRIVATE sensei)
 endif()
 

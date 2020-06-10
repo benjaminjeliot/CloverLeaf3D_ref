@@ -31,8 +31,7 @@ SUBROUTINE hydro
   USE advection_module
   USE reset_field_module
 
-#ifdef ASCENT_ENABLED
-  use ascent, only: ascent_timer_start, ascent_timer_stop
+#ifdef SENSEI_ENABLED
   use insitu, only: insitu_execute, insitu_finalize
 #endif
 
@@ -79,7 +78,7 @@ SUBROUTINE hydro
       IF(MOD(step, visit_frequency).EQ.0) CALL visit()
     ENDIF
 
-#ifdef ASCENT_ENABLED
+#ifdef SENSEI_ENABLED
     call insitu_execute()
 #endif
 
@@ -96,7 +95,7 @@ SUBROUTINE hydro
       CALL field_summary()
       IF(visit_frequency.NE.0) CALL visit()
 
-#ifdef ASCENT_ENABLED
+#ifdef SENSEI_ENABLED
       call insitu_execute()
       call insitu_finalize()
 #endif

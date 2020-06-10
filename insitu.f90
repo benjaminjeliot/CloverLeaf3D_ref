@@ -2,32 +2,45 @@
 
 module insitu
 
-use ascent
 use conduit
 
 implicit none
 
-type(c_ptr) :: ascent_instance
+interface
+
+function sensei_bridge_initialize() result(return_value) bind(c, name="sensei_bridge_initialize")
+  use iso_c_binding, only: c_int
+  implicit none
+  integer(c_int) :: return_value
+end function sensei_bridge_initialize
+
+function sensei_bridge_execute(data_node) result(return_value) bind(c, name="sensei_bridge_execute")
+  use iso_c_binding, only: c_ptr, c_int
+  implicit none
+  type(c_ptr), value :: data_node
+  integer(c_int) :: return_value
+end function sensei_bridge_execute
+
+function sensei_bridge_finalize() result(return_value) bind(c, name="sensei_bridge_finalize")
+  use iso_c_binding, only: c_int
+  implicit none
+  integer(c_int)  return_value
+end function sensei_bridge_finalize
+
+end interface
 
 contains
 
 subroutine insitu_initialize()
 
   use mpi, only: mpi_comm_world
+  use iso_c_binding, only: c_int
 
   implicit none
 
-  type(c_ptr) ascent_options
+  integer(kind=c_int) sensei_error
 
-  ascent_instance = ascent_create()
-
-  ascent_options = conduit_node_create()
-  call conduit_node_set_path_int32(ascent_options, "mpi_comm", mpi_comm_world)
-  call conduit_node_set_path_char8_str(ascent_options, "web/stream", "false")
-  call conduit_node_set_path_char8_str(ascent_options, "pipeline/type", "vtkm")
-
-  call ascent_open(ascent_instance, ascent_options)
-  call conduit_node_destroy(ascent_options)
+  sensei_error = sensei_bridge_initialize()
 
 end subroutine insitu_initialize
 
@@ -35,7 +48,7 @@ subroutine insitu_execute()
 
   use conduit_blueprint
   use conduit_blueprint_mesh
-  use iso_c_binding, only: c_bool
+  use iso_c_binding, only: c_bool, c_int, c_int8_t
   use mpi
 
   use data_module
@@ -43,6 +56,7 @@ subroutine insitu_execute()
   use ideal_gas_module, only : ideal_gas
   use update_halo_module, only : update_halo
   use viscosity_module, only : viscosity
+  use conduit_extra, only: conduit_node_set_path_external_int8_ptr
 
   implicit none
 
@@ -51,13 +65,18 @@ subroutine insitu_execute()
   integer (kind=8) :: n_cells_x, n_cells_y, n_cells_z, n_nodes_x, n_nodes_y, n_nodes_z, n_cells, n_nodes
   integer :: chunk_idx, i, j, k, ghost_flag
   integer :: fields(NUM_FIELDS)
-  type(c_ptr) :: mesh_data, verify_info, ascent_actions, add_pipelines_action, pipelines, add_scenes_action, scenes
+  real(kind=8) :: kernel_time, timer
+  type(c_ptr) :: mesh_data, verify_info
   logical (kind=c_bool) :: verify_result
-  real(8), allocatable :: ghost_mask(:, :, :)
+  integer(kind=c_int8_t) :: duplicate_ghost, garbage_ghost
+  integer(kind=c_int8_t), allocatable :: ghost_mask(:, :, :)
+  integer(kind=c_int) :: sensei_error
 
+  if (profiler_on) kernel_time = timer()
   do chunk_idx = 1, chunks_per_task
     call ideal_gas(chunk_idx, .FALSE.)
   end do
+  if (profiler_on) profiler%ideal_gas = profiler%ideal_gas + (timer() - kernel_time)
 
   fields = 0
   fields(FIELD_DENSITY0) = 1
@@ -66,10 +85,15 @@ subroutine insitu_execute()
   fields(FIELD_XVEL0) = 1
   fields(FIELD_YVEL0) = 1
   fields(FIELD_ZVEL0) = 1
+  if (profiler_on) kernel_time = timer()
   call update_halo(fields, 1)
+  if (profiler_on) profiler%halo_exchange = profiler%halo_exchange+(timer() - kernel_time)
 
+  if (profiler_on) kernel_time = timer()
   call viscosity()
+  if (profiler_on) profiler%viscosity = profiler%viscosity+(timer() - kernel_time)
 
+  if (profiler_on) kernel_time = timer()
   do chunk_idx = 1, chunks_per_task
     if (chunks(chunk_idx)%task == parallel%task) then
 
@@ -92,19 +116,36 @@ subroutine insitu_execute()
                           y_min - n_ghost_layers : y_max + n_ghost_layers, &
                           z_min - n_ghost_layers : z_max + n_ghost_layers))
 
+      duplicate_ghost = 1
+      garbage_ghost = 2
+
       do k = z_min - n_ghost_layers, z_max + n_ghost_layers
         do j = y_min - n_ghost_layers, y_max + n_ghost_layers
           do i = x_min - n_ghost_layers, x_max + n_ghost_layers
             ghost_flag = 0
-            if (k < z_min .or. k > z_max) then
-              ghost_flag = 1
+
+            ! first layer of ghosts
+            if (k < z_min) then
+              ghost_flag = duplicate_ghost
             end if
-            if (j < y_min .or. j > y_max) then
-              ghost_flag = 1
+            if (j < y_min) then
+              ghost_flag = duplicate_ghost
             end if
-            if (i < x_min .or. i > x_max) then
-              ghost_flag = 1
+            if (i < x_min) then
+              ghost_flag = duplicate_ghost
             end if
+
+            ! second layer of ghosts
+            if(k < z_min - 1 ) then
+              ghost_flag = garbage_ghost
+            end if
+            if(j < y_min - 1) then
+              ghost_flag = garbage_ghost
+            end if
+            if(i < x_min - 1) then
+              ghost_flag = garbage_ghost
+            end if
+
             ghost_mask(i, j, k) = ghost_flag
           end do
         end do
@@ -127,10 +168,10 @@ subroutine insitu_execute()
       call conduit_node_set_path_char8_str(mesh_data, "topologies/mesh/coordset", "coords")
 
       ! ghost mask
-      call conduit_node_set_path_char8_str(mesh_data, "fields/ascent_ghosts/association", "element")
-      call conduit_node_set_path_char8_str(mesh_data, "fields/ascent_ghosts/topology", "mesh")
-      call conduit_node_set_path_char8_str(mesh_data, "fields/ascent_ghosts/type", "scalar")
-      call conduit_node_set_path_external_float64_ptr(mesh_data, "fields/ascent_ghosts/values", ghost_mask, n_cells)
+      call conduit_node_set_path_char8_str(mesh_data, "fields/vtkGhostType/association", "element")
+      call conduit_node_set_path_char8_str(mesh_data, "fields/vtkGhostType/topology", "mesh")
+      call conduit_node_set_path_char8_str(mesh_data, "fields/vtkGhostType/type", "scalar")
+      call conduit_node_set_path_external_int8_ptr(mesh_data, "fields/vtkGhostType/values", ghost_mask, n_cells)
 
       ! density
       call conduit_node_set_path_char8_str(mesh_data, "fields/density/association", "element")
@@ -175,55 +216,8 @@ subroutine insitu_execute()
       ! Print the JSON for the chunk data
       ! call conduit_node_print_detailed(mesh_data)
 
-      ! Publish the data
-      call ascent_publish(ascent_instance, mesh_data)
+      sensei_error = sensei_bridge_execute(mesh_data)
 
-      ! Create the Ascent actions
-      ascent_actions = conduit_node_create()
-
-      add_pipelines_action = conduit_node_append(ascent_actions)
-      call conduit_node_set_path_char8_str(add_pipelines_action, "action", "add_pipelines")
-      pipelines = conduit_node_fetch(add_pipelines_action, "pipelines")
-
-      ! vector magnitude
-      call conduit_node_set_path_char8_str(pipelines, "pl1/f1/type", "vector_magnitude")
-      call conduit_node_set_path_char8_str(pipelines, "pl1/f1/params/field", "velocity")
-      call conduit_node_set_path_char8_str(pipelines, "pl1/f1/params/output_name", "velocity_magnitude")
-
-      add_scenes_action = conduit_node_append(ascent_actions)
-      call conduit_node_set_path_char8_str(add_scenes_action, "action", "add_scenes")
-      scenes = conduit_node_fetch(add_scenes_action, "scenes")
-
-      ! density plot
-      call conduit_node_set_path_char8_str(scenes, "s1/plots/p1/type", "volume")
-      call conduit_node_set_path_char8_str(scenes, "s1/plots/p1/field", "density")
-      call conduit_node_set_path_char8_str(scenes, "s1/image_prefix", "density_%04d")
-
-      ! energy plot
-      call conduit_node_set_path_char8_str(scenes, "s2/plots/p1/type", "volume")
-      call conduit_node_set_path_char8_str(scenes, "s2/plots/p1/field", "energy")
-      call conduit_node_set_path_char8_str(scenes, "s2/image_prefix", "energy_%04d")
-
-      ! pressure plot
-      call conduit_node_set_path_char8_str(scenes, "s3/plots/p1/type", "volume")
-      call conduit_node_set_path_char8_str(scenes, "s3/plots/p1/field", "pressure")
-      call conduit_node_set_path_char8_str(scenes, "s3/image_prefix", "pressure_%04d")
-
-      ! viscosity plot
-      call conduit_node_set_path_char8_str(scenes, "s4/plots/p1/type", "volume")
-      call conduit_node_set_path_char8_str(scenes, "s4/plots/p1/field", "viscosity")
-      call conduit_node_set_path_char8_str(scenes, "s4/image_prefix", "viscosity_%04d")
-
-      ! velocity plot
-      call conduit_node_set_path_char8_str(scenes, "s5/plots/p1/type", "volume")
-      call conduit_node_set_path_char8_str(scenes, "s5/plots/p1/field", "velocity_magnitude")
-      call conduit_node_set_path_char8_str(scenes, "s5/plots/p1/pipeline", "pl1")
-      call conduit_node_set_path_char8_str(scenes, "s5/image_prefix", "velocity_magnitude_%04d")
-
-      ! Execute the actions
-      call ascent_execute(ascent_instance, ascent_actions)
-
-      call conduit_node_destroy(ascent_actions)
       call conduit_node_destroy(mesh_data)
 
       deallocate(ghost_mask)
@@ -231,14 +225,19 @@ subroutine insitu_execute()
     end if
   end do
 
+  if (profiler_on) profiler%visit = profiler%visit + (timer() - kernel_time)
+
 end subroutine insitu_execute
 
 subroutine insitu_finalize()
 
+  use iso_c_binding, only: c_int
+
   implicit none
 
-  call ascent_close(ascent_instance)
-  call ascent_destroy(ascent_instance)
+  integer(kind=c_int) sensei_error
+
+  sensei_error = sensei_bridge_finalize()
 
 end subroutine insitu_finalize
 

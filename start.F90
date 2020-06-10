@@ -30,7 +30,7 @@ SUBROUTINE start
   USE ideal_gas_module
   USE build_field_module
 
-#ifdef ASCENT_ENABLED
+#ifdef SENSEI_ENABLED
   use insitu, only: insitu_initialize, insitu_execute
 #endif
 
@@ -170,7 +170,7 @@ SUBROUTINE start
 
   IF(visit_frequency.NE.0) CALL visit()
 
-#ifdef ASCENT_ENABLED
+#ifdef SENSEI_ENABLED
   call insitu_initialize()
   call insitu_execute()
 #endif

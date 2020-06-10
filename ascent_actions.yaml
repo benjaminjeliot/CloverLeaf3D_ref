@@ -1,7 +1,0 @@
--
-  action: "add_triggers"
-  triggers:
-    t1:
-      params:
-        condition: "cycle() % 15 == 0"
-        actions_file: "ascent_trigger_actions.yaml"
